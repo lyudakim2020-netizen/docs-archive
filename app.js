@@ -516,7 +516,7 @@ function vCompare(){
 function median(a){var s=a.slice().sort(function(x,y){return x-y}),n=s.length;return n?(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):0}
 function vAnalytics(){
   var sm=selM(),l=lastM(),p=prevM();
-  var h=top('Аналитика и сверка','Нормы и тренды, безубыточность, деньги против прибыли, контроль данных');
+  var h=top('Аналитика и сверка','Нормы и тренды, безубыточность, контроль данных');
   var th='<th>Показатель</th>'+sm.map(function(m){return '<th>'+esc(m.label)+'</th>'}).join('')+'<th>Тренд</th>';
   function arow(label,fn,o){
     o=o||{};var vs=sm.map(fn);
