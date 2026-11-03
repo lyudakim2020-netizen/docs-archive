@@ -564,25 +564,9 @@ function vAnalytics(){
   // (блок «Что бросается в глаза» убран по решению Люды, 03.11.2026 — учёт ведёт сама,
   //  автоматические «выводы» воспринимались как поучения; контроль качества данных — в «Контроль данных» ниже)
 
-  // контроль данных
-  var Q=[];
-  M.forEach(function(m){
-    var p_=m.pnl,e1=p_.total_revenue-p_.total_cogs-p_.gross_profit,e2=p_.gross_profit-p_.total_expenses-p_.operating_profit,e3=p_.operating_profit+p_.other_income-p_.other_expenses-p_.net_profit;
-    var e4=m.cashflow.opening+sum(m.cashflow.groups.map(function(g){return g.value}))-m.cashflow.closing;
-    var e5=m.k.rev-p_.other_revenue-m.k.sales;
-    var gi=sum(p_.expense_groups.map(function(g){return g.value}))-p_.total_expenses;
-    var ix=M.indexOf(m),pe=ix>0?M[ix-1].k.close-m.k.open:null;
-    var ymd=m.month.split('-'),dim=new Date(+ymd[0],+ymd[1],0).getDate(),dset={};
-    m.checks.forEach(function(r){dset[r.date]=1});
-    var miss=dim-Object.keys(dset).length;
-    var ratio=m.k.wages>0?(m.k.contrib/m.k.wages):null;
-    var ratioOk=ratio!=null&&ratio>=0.15&&ratio<=0.45;
-    Q.push('<tr><td>'+esc(m.label)+'</td>'+[e1,e2,e3,e4,e5,gi].map(function(e){return '<td class="'+(Math.abs(e)>1?'neg':'pos')+'">'+(Math.abs(e)>1?fmt(e):'ок')+'</td>'}).join('')+
-      '<td class="'+(pe!=null&&Math.abs(pe)>1?'neg':'pos')+'">'+(pe==null?'—':(Math.abs(pe)>1?fmt(pe):'ок'))+'</td>'+
-      '<td class="'+(miss>0?'neg':'pos')+'">'+(miss>0?'нет '+miss+' дн.':'ок')+'</td>'+
-      '<td class="'+(ratio==null?'':(ratioOk?'pos':'neg'))+'">'+(ratio==null?'—':(ratioOk?'ок':pc(ratio*100)))+'</td></tr>');
-  });
-  h+='<div class="panel"><h3>Контроль данных</h3><div class="n">Все месяцы. «ок» — проверка пройдена, число — что не сошлось. Взносы/зарплата вне нормы 15–45% — следствие учёта по факту оплаты: месяц без оплаты взносов завышен, месяц оплаты занижен.</div><div class="ts"><table><thead><tr><th>Месяц</th><th>Выручка − себест. = валовая</th><th>Валовая − расходы = опер.</th><th>Опер. ± прочее = чистая</th><th>Начало + ДДС = конец</th><th>Выручка ОПиУ = чеки</th><th>Группы = итого расходов</th><th>Конец пред. = начало</th><th>Все дни в чеках</th><th>Взносы/зарплата 15–45%</th></tr></thead><tbody>'+Q.join('')+'</tbody></table></div></div>';
+  // (блок «Контроль данных» убран по решению Люды, 03.11.2026 — техническая сверка, непонятна без контекста;
+  //  проверки данных продолжаем прогонять при каждом обновлении скриптом check.cjs)
+
   $('#main').innerHTML=h;
 }
 })();
