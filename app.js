@@ -114,7 +114,7 @@ function start(data){
   $$('#nav a').forEach(function(a){a.addEventListener('click',function(){view=a.dataset.v;render();window.scrollTo(0,0)})});
   $('#period').innerHTML='Данные: '+M[0].label+(M.length>1?' – '+M[M.length-1].label:'')+'<br>Месяцев: '+M.length+'<br>Валюта: ₽';
   render();
-  if(typeof Chart==='undefined'){chartTries=0;setTimeout(ensureChart,800)}
+  armCharts();
 }
 
 /* метрики месяца */
@@ -209,7 +209,7 @@ var vlPlugin={id:'vl',afterDatasetsDraw:function(ch){
   });
   ctx.restore();
 }};
-var chartTries=0,chartLoading=false;
+var chartTries=0,chartLoading=false,chartArmed=false,chartPoll=null;
 function ensureChart(){
   if(window.Chart||chartLoading||chartTries>=6)return;
   chartLoading=true;chartTries++;
@@ -219,19 +219,35 @@ function ensureChart(){
   s.onerror=function(){chartLoading=false;setTimeout(ensureChart,2000)};
   document.head.appendChild(s);
 }
+/* одна авторитетная точка: как только Chart.js доступен (любым путём) — перерисовать */
+function armCharts(){
+  if(window.Chart)return;
+  if(chartArmed)return;
+  chartArmed=true;
+  var tries=0;
+  var tick=function(){
+    if(window.Chart){chartArmed=false;render();return}
+    if(++tries>24)return;
+    ensureChart();
+    chartPoll=setTimeout(tick,700);
+  };
+  chartPoll=setTimeout(tick,700);
+}
 function bindChartFail(){
-  $$('.cb-fail button').forEach(function(b){b.addEventListener('click',function(){chartTries=0;ensureChart()})});
+  $$('.cb-fail button').forEach(function(b){b.addEventListener('click',function(){chartTries=0;chartArmed=false;ensureChart();armCharts()})});
 }
 function mk(id,cfg){
   if(charts[id]){charts[id].destroy();delete charts[id]}
   var el=document.getElementById(id); if(!el)return;
   if(typeof Chart==='undefined'){
     el.parentNode.innerHTML='<div class="cb-fail">График не загрузился — блокировщик рекламы или сбой сети.<br><button class="chip" type="button">Повторить</button></div>';
-    bindChartFail();setTimeout(ensureChart,1500);
+    bindChartFail();
     return;
   }
   if(!cfg.plugins)cfg.plugins=[vlPlugin];else if(cfg.plugins.indexOf(vlPlugin)<0)cfg.plugins.push(vlPlugin);
-  Chart.defaults.animation=REDUCE?false:{duration:850,easing:'easeOutQuart'};
+  /* анимация выключена намеренно: в браузерах с тормознутым rAF (расширения, энергосбережение)
+     графики замирали крошечными на первом кадре; статика рисуется мгновенно и надёжно */
+  Chart.defaults.animation=false;
   Chart.defaults.color=C.dim;Chart.defaults.borderColor=C.grid;Chart.defaults.font.family='-apple-system,"Segoe UI",Roboto,sans-serif';Chart.defaults.font.size=11;
   charts[id]=new Chart(el,cfg);
 }
