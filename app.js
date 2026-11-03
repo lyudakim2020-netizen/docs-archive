@@ -16,18 +16,35 @@ async function decrypt(pin){
   return JSON.parse(new TextDecoder().decode(pt));
 }
 var gform=$('#gform'),gerr=$('#gerr'),gbtn=$('#gbtn');
+var pinFails=0,pinLockUntil=0,pinTimer=null;
 gform.addEventListener('submit',async function(e){
   e.preventDefault();
+  if(Date.now()<pinLockUntil)return;
   var pin=$('#pin').value;
   if(!pin) return;
   gbtn.disabled=true;gerr.textContent='';
   try{
     var data=await decrypt(pin);
     try{ if($('#rem').checked) localStorage.setItem('_k',pin); }catch(_){}
+    pinFails=0;
     start(data);
   }catch(err){
-    gerr.textContent=(err&&err.message==='nofile')?'Файл данных не найден':'Неверный код';
-    gbtn.disabled=false;$('#pin').select();
+    pinFails++;
+    if(pinFails>=5){
+      pinLockUntil=Date.now()+30000;
+      var left=30;
+      gerr.textContent='Слишком много попыток. Повторите через '+left+' с';
+      if(pinTimer)clearInterval(pinTimer);
+      pinTimer=setInterval(function(){
+        left--;
+        if(left<=0){clearInterval(pinTimer);pinTimer=null;gbtn.disabled=false;gerr.textContent=''}
+        else gerr.textContent='Слишком много попыток. Повторите через '+left+' с';
+      },1000);
+    }else{
+      gerr.textContent=(err&&err.message==='nofile')?'Файл данных не найден':'Неверный код';
+      gbtn.disabled=false;
+    }
+    $('#pin').select();
   }
 });
 $('#lock').addEventListener('click',function(){try{localStorage.removeItem('_k')}catch(_){};location.reload()});
@@ -64,9 +81,9 @@ function animateNums(){
   if(REDUCE) return;
   $$('.kpi .v,.big').forEach(function(el){
     if(el.children.length) return;
-    var text=el.textContent,mt=text.match(/(-?)(\d[\d  ]*)(,(\d+))?/);
+    var text=el.textContent,mt=text.match(/(-?)(\d[\d\u00a0 ]*)(,(\d+))?/);
     if(!mt) return;
-    var target=parseFloat(mt[2].replace(/[\s ]/g,'')+(mt[4]?'.'+mt[4]:''))*(mt[1]?-1:1);
+    var target=parseFloat(mt[2].replace(/[\s\u00a0]/g,'')+(mt[4]?'.'+mt[4]:''))*(mt[1]?-1:1);
     if(!isFinite(target)||target===0) return;
     var dec=mt[4]?mt[4].length:0,pre=text.slice(0,mt.index),suf=text.slice(mt.index+mt[0].length),t0=null,dur=800;
     function step(t){
@@ -97,6 +114,7 @@ function start(data){
   $$('#nav a').forEach(function(a){a.addEventListener('click',function(){view=a.dataset.v;render();window.scrollTo(0,0)})});
   $('#period').innerHTML='Данные: '+M[0].label+(M.length>1?' – '+M[M.length-1].label:'')+'<br>Месяцев: '+M.length+'<br>Валюта: ₽';
   render();
+  if(typeof Chart==='undefined'){chartTries=0;setTimeout(ensureChart,800)}
 }
 
 /* метрики месяца */
@@ -162,9 +180,57 @@ function spark(arr,hib){
 }
 
 /* ================= ГРАФИКИ ================= */
+/* подписи значений прямо на графиках (без внешних плагинов): для одиночного ряда
+   добавляются автоматически; для водопадов (значения [от,до]) подписывается дельта,
+   а индексы итоговых столбцов перечисляются в vlAbs конфига */
+var vlPlugin={id:'vl',afterDatasetsDraw:function(ch){
+  var ds=ch.data.datasets;if(!ds||ds.length!==1)return;
+  var t=ch.config.type;if(t==='doughnut'||t==='pie')return;
+  var horiz=ch.options.indexAxis==='y';
+  var meta=ch.getDatasetMeta(0);if(!meta||meta.hidden)return;
+  var abs=ch.options.vlAbs||[];
+  var data=ds[0].data,n=data.length;
+  if((t==='line'&&n>18)||n>31)return;
+  var ctx=ch.ctx;ctx.save();
+  ctx.font='600 9.5px -apple-system,"Segoe UI",Roboto,sans-serif';
+  ctx.fillStyle='#9AAEC8';
+  meta.data.forEach(function(el,i){
+    var v=data[i];if(v==null||v===0)return;
+    var txt,al='center',x=el.x,y=el.y-5;
+    if(Array.isArray(v)){
+      if(abs.indexOf(i)>-1){txt=fmt(v[1]);y=el.y-5}
+      else{var d=v[1]-v[0];txt=(d>0?'+':'−')+fmt(Math.abs(d))}
+    }else{
+      txt=fmt(v);
+      if(horiz){al='right';x=el.x-5;y=el.y+3.5}
+      else if(v<0){y=el.y+13}
+    }
+    ctx.textAlign=al;ctx.fillText(txt,x,y);
+  });
+  ctx.restore();
+}};
+var chartTries=0,chartLoading=false;
+function ensureChart(){
+  if(window.Chart||chartLoading||chartTries>=6)return;
+  chartLoading=true;chartTries++;
+  var s=document.createElement('script');
+  s.src='v.js'+(chartTries>1?'?r='+Date.now()+'_'+chartTries:'');
+  s.onload=function(){chartLoading=false;render()};
+  s.onerror=function(){chartLoading=false;setTimeout(ensureChart,2000)};
+  document.head.appendChild(s);
+}
+function bindChartFail(){
+  $$('.cb-fail button').forEach(function(b){b.addEventListener('click',function(){chartTries=0;ensureChart()})});
+}
 function mk(id,cfg){
   if(charts[id]){charts[id].destroy();delete charts[id]}
-  var el=document.getElementById(id); if(!el||typeof Chart==='undefined') return;
+  var el=document.getElementById(id); if(!el)return;
+  if(typeof Chart==='undefined'){
+    el.parentNode.innerHTML='<div class="cb-fail">График не загрузился — блокировщик рекламы или сбой сети.<br><button class="chip" type="button">Повторить</button></div>';
+    bindChartFail();setTimeout(ensureChart,1500);
+    return;
+  }
+  if(!cfg.plugins)cfg.plugins=[vlPlugin];else if(cfg.plugins.indexOf(vlPlugin)<0)cfg.plugins.push(vlPlugin);
   Chart.defaults.animation=REDUCE?false:{duration:850,easing:'easeOutQuart'};
   Chart.defaults.color=C.dim;Chart.defaults.borderColor=C.grid;Chart.defaults.font.family='-apple-system,"Segoe UI",Roboto,sans-serif';Chart.defaults.font.size=11;
   charts[id]=new Chart(el,cfg);
@@ -289,8 +355,8 @@ function vCf(){
   var gnames=[];sm.forEach(function(m){m.cashflow.groups.forEach(function(g){if(gnames.indexOf(g.name)<0)gnames.push(g.name)})});
   gnames.forEach(function(gn){
     rows+='<tr class="grp"><td>'+esc(gn)+'</td>'+sm.map(function(m){var g=find(m.cashflow.groups,gn);return c(g?g.value:0)}).join('')+'</tr>';
-    var inames=[];sm.forEach(function(m){var g=m.cashflow.groups.filter(function(x){return x.name===gn})[0];if(g)g.items.forEach(function(i){if(i.name!=='(без статьи)'&&inames.indexOf(i.name)<0)inames.push(i.name)})});
-    inames.forEach(function(n){rows+='<tr class="sub"><td>'+esc(n)+'</td>'+sm.map(function(m){var g=m.cashflow.groups.filter(function(x){return x.name===gn})[0];var it=g&&g.items.filter(function(i){return i.name===n})[0];return it&&it.value?c(it.value):'<td class="na">—</td>'}).join('')+'</tr>'});
+    var inames=[];sm.forEach(function(m){var g=m.cashflow.groups.filter(function(x){return x.name===gn})[0];if(g)g.items.forEach(function(i){if(inames.indexOf(i.name)<0)inames.push(i.name)})});
+    inames.forEach(function(n){var unnamed=n==='(без статьи)';rows+='<tr class="sub"><td'+(unnamed?' class="na"':'')+'>'+esc(n)+'</td>'+sm.map(function(m){var g=m.cashflow.groups.filter(function(x){return x.name===gn})[0];var it=g&&g.items.filter(function(i){return i.name===n})[0];return it&&it.value?c(it.value):'<td class="na">—</td>'}).join('')+'</tr>'});
   });
   rows+='<tr class="tot"><td>Остаток на конец</td>'+sm.map(function(m){return '<td>'+fmt(m.cashflow.closing)+'</td>'}).join('')+'</tr>';
   h+='<div class="g2"><div class="panel"><h3>Как менялись деньги</h3><div class="n">'+esc(l.label)+': от остатка на начало к остатку на конец, ₽</div>'+box('f1',320)+'</div>'+
@@ -301,7 +367,7 @@ function vCf(){
   var run=l.cashflow.opening,lbls=['Начало'],data=[[0,run]],cols=['#7C97B0'];
   gs.forEach(function(g){lbls.push(g.name.replace(/^\d+\.?\s*/,''));data.push([run,run+g.value]);run+=g.value;cols.push(g.value>=0?C.good:C.bad)});
   lbls.push('Конец');data.push([0,l.cashflow.closing]);cols.push(C.accent);
-  mk('f1',{type:'bar',data:{labels:lbls,datasets:[{data:data,backgroundColor:cols,borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){var d=c.raw;return ' '+fm(d[1]-d[0])+(c.dataIndex===0||c.dataIndex===lbls.length-1?' (остаток '+fm(d[1])+')':'')}}}},scales:{x:{grid:{display:false},ticks:{font:{size:9},maxRotation:60}},y:{grid:{color:C.grid},ticks:{callback:kfmt}}}}});
+  mk('f1',{type:'bar',vlAbs:[0,lbls.length-1],data:{labels:lbls,datasets:[{data:data,backgroundColor:cols,borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){var d=c.raw;return ' '+fm(d[1]-d[0])+(c.dataIndex===0||c.dataIndex===lbls.length-1?' (остаток '+fm(d[1])+')':'')}}}},scales:{x:{grid:{display:false},ticks:{font:{size:9},maxRotation:60}},y:{grid:{color:C.grid},ticks:{callback:kfmt}}}}});
   var ex=gs.filter(function(g){return g.name.toUpperCase().indexOf('ВЫРУЧКА')<0&&g.value<0}).map(function(g){return {n:g.name.replace(/^\d+\.?\s*/,''),v:g.value}}).sort(function(a,b){return a.v-b.v});
   mk('f2',{type:'bar',data:{labels:ex.map(function(x){return x.n}),datasets:[{data:ex.map(function(x){return x.v}),backgroundColor:C.bad,borderRadius:3}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' '+fm(c.parsed.x)}}}},scales:{x:{grid:{color:C.grid},ticks:{callback:kfmt}},y:{grid:{display:false},ticks:{font:{size:10.5}}}}}});
 }
@@ -320,12 +386,15 @@ function vChecks(){
   h+='<div class="g2e"><div class="panel"><h3>Средние продажи за день недели</h3><div class="n">₽ за один день</div>'+box('k3',250)+'</div><div class="panel"><h3>Средний чек по дням недели</h3><div class="n">₽ на чек</div>'+box('k4',250)+'</div></div>';
   $('#main').innerHTML=h;
   $$('.seg button').forEach(function(b){b.addEventListener('click',function(){gran=b.dataset.g;render()})});
-  var bk=[];
+  var bk=[],partial=0;
   if(gran==='day'){bk=rows.map(function(r){return {l:r.date.slice(0,5),s:r.sales,c:r.checks}})}
   else if(gran==='month'){sm.forEach(function(m){bk.push({l:m.label,s:m.k.sales,c:m.k.checks})})}
-  else{var mp={},ord=[];rows.forEach(function(r){var a=r.date.split('.'),d=new Date(+a[2],+a[1]-1,+a[0]);d.setDate(d.getDate()-((d.getDay()+6)%7));var key=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);if(!mp[key]){mp[key]={l:('0'+d.getDate()).slice(-2)+'.'+('0'+(d.getMonth()+1)).slice(-2),s:0,c:0};ord.push(key)}mp[key].s+=r.sales;mp[key].c+=r.checks});ord.sort().forEach(function(k){bk.push(mp[k])})}
+  else{var mp={},ord=[];rows.forEach(function(r){var a=r.date.split('.'),d=new Date(+a[2],+a[1]-1,+a[0]);d.setDate(d.getDate()-((d.getDay()+6)%7));var key=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);if(!mp[key]){mp[key]={l:('0'+d.getDate()).slice(-2)+'.'+('0'+(d.getMonth()+1)).slice(-2),s:0,c:0};ord.push(key)}mp[key].s+=r.sales;mp[key].c+=r.checks});ord.sort().forEach(function(k){bk.push(mp[k])});
+    if(rows.length){var la=rows[rows.length-1].date.split('.'),lastDay=new Date(+la[2],+la[1],0).getDate(),wk=bk[bk.length-1];
+      if(wk){var wa=wk.l.split('.');partial=Math.min(7,lastDay-(+wa[0])+1);if(partial<7)wk.l+='*'}}}
   var tl=bk.length>20?{maxTicksLimit:16,font:{size:9}}:{font:{size:10}};
   mk('k1',{type:'bar',data:{labels:bk.map(function(b){return b.l}),datasets:[{label:'Продажи',data:bk.map(function(b){return b.s}),backgroundColor:'rgba(79,143,199,.65)',borderRadius:3}]},options:base({plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' '+fm(c.parsed.y)}}}},scales:{x:{grid:{display:false},ticks:tl},y:{grid:{color:C.grid},ticks:{callback:kfmt}}}})});
+  if(partial>0&&partial<7){var pn=document.getElementById('k1');if(pn){var pd=document.createElement('div');pd.className='fn';pd.textContent='* последняя неделя неполная: '+partial+' дн. до конца месяца';pn.parentNode.parentNode.appendChild(pd)}}
   mk('k2',{type:'line',data:{labels:bk.map(function(b){return b.l}),datasets:[{label:'Средний чек',data:bk.map(function(b){return sd(b.s,b.c)}),borderColor:C.accent,backgroundColor:'rgba(79,143,199,.12)',fill:true,tension:.3,pointRadius:bk.length>40?0:3}]},options:base({plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' '+fm(c.parsed.y)}}}},scales:{x:{grid:{display:false},ticks:tl},y:{grid:{color:C.grid},ticks:{callback:function(v){return fm(v)}}}}})});
   var wd={};WD.forEach(function(w){wd[w]={s:0,c:0,n:0}});rows.forEach(function(r){var x=wd[r.weekday];if(x){x.s+=r.sales;x.c+=r.checks;x.n++}});
   var avgS=WD.map(function(w){return wd[w].n?wd[w].s/wd[w].n:0}),mx=avgS.indexOf(Math.max.apply(null,avgS));
@@ -429,7 +498,7 @@ function vCompare(){
     if(s[2]){wl.push(s[0]);wd.push([0,s[1]]);wc.push(C.accent);wdel.push(s[1]);run=s[1]}
     else{wl.push(s[0]);wd.push([run,run+s[1]]);wc.push(s[1]>=0?C.good:C.bad);wdel.push(s[1]);run+=s[1]}
   });
-  mk('m2',{type:'bar',data:{labels:wl,datasets:[{data:wd,backgroundColor:wc,borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){var d=wdel[c.dataIndex];return c.dataIndex===0||c.dataIndex===wl.length-1?' '+fm(d):' '+(d>0?'+':'−')+fmt(Math.abs(d))+' ₽'}}}},scales:{x:{grid:{display:false},ticks:{font:{size:9.5},maxRotation:60}},y:{grid:{color:C.grid},ticks:{callback:kfmt}}}}});
+  mk('m2',{type:'bar',vlAbs:[0,wl.length-1],data:{labels:wl,datasets:[{data:wd,backgroundColor:wc,borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){var d=wdel[c.dataIndex];return c.dataIndex===0||c.dataIndex===wl.length-1?' '+fm(d):' '+(d>0?'+':'−')+fmt(Math.abs(d))+' ₽'}}}},scales:{x:{grid:{display:false},ticks:{font:{size:9.5},maxRotation:60}},y:{grid:{color:C.grid},ticks:{callback:kfmt}}}}});
   // топ изменений по статьям
   var map={};
   var addIt=function(m,key,v,isA){if(!map[key])map[key]={a:0,b:0};map[key][isA?'a':'b']+=v};
@@ -447,7 +516,7 @@ function vCompare(){
 function median(a){var s=a.slice().sort(function(x,y){return x-y}),n=s.length;return n?(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):0}
 function vAnalytics(){
   var sm=selM(),l=lastM(),p=prevM();
-  var h=top('Аналитика и сверка','Нормы, тренды, где сократить, безубыточность, контроль данных');
+  var h=top('Аналитика и сверка','Нормы и тренды, безубыточность, деньги против прибыли, контроль данных');
   var th='<th>Показатель</th>'+sm.map(function(m){return '<th>'+esc(m.label)+'</th>'}).join('')+'<th>Тренд</th>';
   function arow(label,fn,o){
     o=o||{};var vs=sm.map(fn);
@@ -482,65 +551,26 @@ function vAnalytics(){
   R+=arow('Остаток денег на конец',function(m){return m.k.close});
   h+='<div class="panel"><h3>Показатели по месяцам</h3><div class="n"><span class="dot good"></span>норма или улучшение · <span class="dot warn"></span>ухудшение 10–25% · <span class="dot bad"></span>ухудшение более 25% (к предыдущему месяцу). Для затратных строк рост — это ухудшение.</div><div class="ts"><table><thead><tr>'+th+'</tr></thead><tbody>'+R+'</tbody></table></div></div>';
 
-  // где сократить: сравнение доли в выручке с типичной долей по всем месяцам
-  var SAVE=[
-    ['Зарплата (без чаевых и взносов)',function(k){return k.wages}],
-    ['Помещение (без мебели)',function(k){return k.premClean}],
-    ['Прочие расходы (без оборудования и ДР бара)',function(k){return k.otherClean}],
-    ['Недостача по инвентаризации (нетто)',function(k){return Math.max(0,k.invNet)}],
-    ['Порча, пролив, списания',function(k){return k.waste}],
-    ['Питание персонала, учредителя, представительские',function(k){return k.staffFood}],
-    ['Банк (эквайринг и переводы)',function(k){return k.bank}],
-    ['Маркетинг',function(k){return k.mkt}]];
-  if(M.length>=3){
-    var SV=SAVE.map(function(s){
-      var sh=sd(s[1](l.k),l.k.rev),md=median(M.map(function(m){return sd(s[1](m.k),m.k.rev)}));
-      return {n:s[0],v:s[1](l.k),sh:sh,md:md,pot:Math.max(0,(sh-md)*l.k.rev)};
-    }).sort(function(x,y){return y.pot-x.pot});
-    h+='<div class="panel"><h3>Где сократить</h3><div class="n">'+esc(l.label)+': доля статьи в выручке против типичной доли по всем вашим месяцам (медиана). «Потенциал» — сколько вы сэкономили бы, вернувшись к типичной доле. Это ориентир по вашим же данным, не отраслевая норма.</div><div class="ts"><table><thead><tr><th>Статья</th><th>'+esc(l.label)+', ₽</th><th>% выручки</th><th>Типично, %</th><th>Потенциал, ₽</th></tr></thead><tbody>'+
-      SV.map(function(x){return '<tr><td>'+x.n+'</td><td>'+fmt(x.v)+'</td><td>'+pc(x.sh*100)+'</td><td>'+pc(x.md*100)+'</td><td class="'+(x.pot>0?'neg':'')+'" style="font-weight:700">'+(x.pot>0?fmt(x.pot):'—')+'</td></tr>'}).join('')+
-      '</tbody></table></div><div class="fn">Чаевые не считаются: это деньги гостей. Разовые траты (оборудование, мебель, ДР бара) вынесены отдельно, чтобы не искажать долю.</div></div>';
-  }
+  // (блок «Где сократить» убран по решению Люды, 03.11.2026)
 
   // безубыточность по регулярным расходам
   var reg=l.k.opex-l.k.capex-l.k.event,be=sd(reg,l.k.gm),beAll=sd(l.k.opex,l.k.gm),sf=be==null?null:sd(l.k.rev-be,l.k.rev);
-  h+='<div class="g2e"><div class="panel"><h3>Точка безубыточности</h3><div class="n">'+esc(l.label)+' · регулярные расходы ÷ валовая маржа</div><div class="big">'+fm(be)+'</div><div class="fn">Выручка, при которой валовой прибыли хватает на регулярные расходы (включая персонал). Из расходов исключены оборудование, мебель и ДР бара: '+fm(l.k.capex+l.k.event)+'. Со всеми расходами месяца точка была бы '+fm(beAll)+'. Весь персонал считается постоянным расходом, поэтому реальный запас чуть выше.</div></div>'+
+  h+='<div class="g2e"><div class="panel"><h3>Точка безубыточности</h3><div class="n">'+esc(l.label)+' · регулярные расходы ÷ валовая маржа</div><div class="big">'+fm(be)+'</div>'+(be!=null?'<div class="n" style="margin-top:8px;font-size:15px;color:var(--ink)">≈ '+fmt(Math.round(be/l.k.avg))+' чеков в день</div><div class="fn">при среднем чеке '+fm(l.k.avg)+'</div>':'')+'<div class="fn">Выручка, при которой валовой прибыли хватает на регулярные расходы (включая персонал). Из расходов исключены оборудование, мебель и ДР бара: '+fm(l.k.capex+l.k.event)+'. Со всеми расходами месяца точка была бы '+fm(beAll)+'. Весь персонал считается постоянным расходом, поэтому реальный запас чуть выше.</div></div>'+
      '<div class="panel"><h3>Запас прочности</h3><div class="n">'+esc(l.label)+' · на сколько факт выше точки</div><div class="big '+(sf!=null&&sf<0?'neg':'')+'">'+pc(sf==null?null:sf*100)+'</div><div class="fn">На сколько процентов может упасть выручка, прежде чем месяц уйдёт в операционный минус по регулярным расходам.</div></div></div>';
 
-  // деньги против прибыли
-  var cashRows='',cum=0;
-  M.forEach(function(m){
-    var gap=m.k.cfRev-(m.k.rev-m.pnl.other_revenue);cum+=gap;
-    if(sel.indexOf(m.month)<0) return;
-    cashRows+='<tr><td>'+esc(m.label)+'</td><td>'+fmt(m.k.rev)+'</td><td>'+fmt(m.k.cfRev)+'</td><td>'+fmt(gap)+'</td><td class="'+(Math.abs(cum)>m.k.rev*.05?'neg':'')+'">'+fmt(cum)+'</td><td>'+fmt(m.k.net)+'</td><td>'+fmt(m.k.opNet)+'</td><td>'+fmt(m.k.div)+'</td><td>'+(m.k.loan?fmt(m.k.loan):'—')+'</td><td class="'+((m.k.close-m.k.open)<0?'neg':'pos')+'">'+fmt(m.k.close-m.k.open)+'</td></tr>';
-  });
-  h+='<div class="panel"><h3>Деньги против прибыли</h3><div class="n">Чем ДДС отличается от ОПиУ и куда ушли деньги</div><div class="ts"><table><thead><tr><th>Месяц</th><th>Выручка ОПиУ</th><th>Выручка ДДС</th><th>Разница</th><th>Накопленная разница</th><th>Чистая прибыль</th><th>Операц. денежный поток</th><th>Выплаты учредителям</th><th>Выплата по кредиту</th><th>Изменение остатка</th></tr></thead><tbody>'+cashRows+'</tbody></table></div><div class="fn">ОПиУ считает продажи в день продажи, ДДС — деньги в день поступления, поэтому разница в каждом месяце нормальна (эквайринг приходит со сдвигом). Следите за накопленной разницей с первого месяца данных: она должна оставаться небольшой. Красным она подсвечена, если больше 5% выручки месяца.</div></div>';
+  // деньги против прибыли (компактно: четыре числа вместо большой таблицы, 03.11.2026)
+  var gapNow=0,cum=0;
+  M.forEach(function(m){var g=m.k.cfRev-(m.k.rev-(m.pnl.other_revenue||0));cum+=g;if(m.month===l.month)gapNow=g});
+  var cumBig=Math.abs(cum)>l.k.rev*.05;
+  h+='<div class="panel"><h3>Деньги против прибыли</h3><div class="n">'+esc(l.label)+': продажи по ОПиУ против поступлений по ДДС</div><div class="kpis">'+
+    kpi('Выручка по ОПиУ',fm(l.k.rev),'<span class="d flat">продажи в день продажи</span>')+
+    kpi('Выручка по ДДС',fm(l.k.cfRev),'<span class="d flat">деньги в день поступления</span>')+
+    kpi('Разница за месяц',fm(gapNow),'<span class="d flat">эквайринг в пути на конец месяца</span>')+
+    kpi('Накопленная разница',fm(cum),'<span class="d '+(cumBig?'down':'flat')+'">'+(cumBig?'больше 5% выручки — разобраться':'в пределах нормы')+'</span>')+
+  '</div><div class="fn">Эквайринг доходит со сдвигом 2–4 дня, поэтому разница между продажами и поступлениями каждый месяц есть — это нормально. Следим за накопленной разницей с первого месяца данных: она должна оставаться небольшой. Если превысит ~5% выручки — деньги «застряли» (эквайринг, задержки), надо разбираться.</div></div>';
 
-  // выводы
-  var N=[];
-  function note(cls,t){N.push('<li class="'+cls+'">'+t+'</li>')}
-  if(p){
-    var dm=(l.k.nm-p.k.nm)*100;
-    note(dm<-1?'bad':(dm>1?'good':'warn'),'Чистая маржа: '+pc(p.k.nm*100)+' → '+pc(l.k.nm*100)+' ('+(dm>0?'+':'')+dm.toFixed(1)+' п.п.).');
-    var dfc=(sd(l.k.food,l.k.rev)-sd(p.k.food,p.k.rev))*100;
-    if(Math.abs(dfc)>=1) note(dfc>0?'bad':'good','Фудкост '+(dfc>0?'вырос':'снизился')+' на '+Math.abs(dfc).toFixed(1)+' п.п.: '+pc(sd(p.k.food,p.k.rev)*100)+' → '+pc(sd(l.k.food,l.k.rev)*100)+'.');
-    var dsf=(sd(l.k.wages,l.k.rev)-sd(p.k.wages,p.k.rev))*100;
-    if(Math.abs(dsf)>=1) note(dsf>0?'bad':'good','Доля зарплаты (без чаевых и взносов) '+(dsf>0?'выросла':'снизилась')+' на '+Math.abs(dsf).toFixed(1)+' п.п. ('+pc(sd(p.k.wages,p.k.rev)*100)+' → '+pc(sd(l.k.wages,l.k.rev)*100)+').');
-  }
-  var inv=sd(Math.abs(l.k.invNet),l.k.rev)*100;
-  if(inv>=2) note(inv>=4?'bad':'warn','Инвентаризация нетто в '+esc(l.label)+': '+fm(l.k.invNet)+' ('+pc(inv)+' выручки). Это недостача после зачёта излишков: проверьте пересортицу и период, в который попали излишки.');
-  if(l.k.capex>0) note('warn','Покупка оборудования и мебели ('+fm(l.k.capex)+') проведена в расходах. Это капитальные траты: без них операционная прибыль '+fm(l.k.adjOp)+'. Для баланса их надо вынести в основные средства.');
-  if(l.k.event>0.03*l.k.rev) note('warn','«ДР Бара»: '+fm(l.k.event)+' ('+pc(l.k.event/l.k.rev*100)+' выручки). Разовое мероприятие сильно меняет прибыль месяца: сравнивайте месяцы и без него.');
-  if(l.k.wages>0&&l.k.contrib<0.05*l.k.wages) note('bad','Взносы с ФОТ за '+esc(l.label)+' почти не начислены ('+fm(l.k.contrib)+' при зарплате '+fm(l.k.wages)+'). Прибыль завышена, и в обязательствах баланса есть долг.');
-  else if(l.k.wages>0&&l.k.contrib>0.25*l.k.wages) note('warn','Взносы с ФОТ ('+fm(l.k.contrib)+') намного выше зарплаты в пропорции '+pc(l.k.contrib/l.k.wages*100)+'. Похоже, это доплата за прошлые месяцы: прибыль месяца занижена, предыдущих завышена.');
-  if(l.k.rizz!==0||l.pnl.other_income||l.pnl.other_expenses) note('warn','Расчёты с RizzW (доход '+fm(l.pnl.other_income)+', расход '+fm(l.pnl.other_expenses)+') попали в прочие доходы и расходы. Это другая компания, в прибыль Лагера их включать нельзя.');
-  var paid=l.k.div+l.k.loan;
-  if(l.k.opNet>0&&paid>l.k.opNet) note(l.k.close<l.k.open?'bad':'warn','Выплаты учредителям'+(l.k.loan?' и по кредиту':'')+' ('+fm(paid)+') больше операционного денежного потока ('+fm(l.k.opNet)+'): остаток денег '+(l.k.close<l.k.open?'уменьшился':'держится за счёт накоплений')+' на '+fm(Math.abs(l.k.close-l.k.open))+'.');
-  var dv=sd(l.k.div,l.k.net);
-  if(dv!=null&&dv>1) note('bad','Выплаты учредителям за '+esc(l.label)+' ('+fm(l.k.div)+') больше чистой прибыли месяца ('+fm(l.k.net)+').');
-  if(sf!=null&&sf<.15) note(sf<0?'bad':'warn','Запас прочности '+pc(sf*100)+': выручка близка к точке безубыточности '+fm(be)+'.');
-  note('warn','Налогов нет ни в ОПиУ, ни в ДДС: чистая прибыль здесь до налогов. Сверьте с вашей налоговой отчётностью.');
-  h+='<div class="panel"><h3>Что бросается в глаза</h3><div class="n">Автоматические выводы по '+esc(l.label)+(p?' к '+esc(p.label):'')+'. Это подсказки для разбора, а не диагноз.</div><ul class="notes">'+N.join('')+'</ul></div>';
+  // (блок «Что бросается в глаза» убран по решению Люды, 03.11.2026 — учёт ведёт сама,
+  //  автоматические «выводы» воспринимались как поучения; контроль качества данных — в «Контроль данных» ниже)
 
   // контроль данных
   var Q=[];
@@ -550,9 +580,17 @@ function vAnalytics(){
     var e5=m.k.rev-p_.other_revenue-m.k.sales;
     var gi=sum(p_.expense_groups.map(function(g){return g.value}))-p_.total_expenses;
     var ix=M.indexOf(m),pe=ix>0?M[ix-1].k.close-m.k.open:null;
-    Q.push('<tr><td>'+esc(m.label)+'</td>'+[e1,e2,e3,e4,e5,gi].map(function(e){return '<td class="'+(Math.abs(e)>1?'neg':'pos')+'">'+(Math.abs(e)>1?fmt(e):'ок')+'</td>'}).join('')+'<td class="'+(pe!=null&&Math.abs(pe)>1?'neg':'pos')+'">'+(pe==null?'—':(Math.abs(pe)>1?fmt(pe):'ок'))+'</td></tr>');
+    var ymd=m.month.split('-'),dim=new Date(+ymd[0],+ymd[1],0).getDate(),dset={};
+    m.checks.forEach(function(r){dset[r.date]=1});
+    var miss=dim-Object.keys(dset).length;
+    var ratio=m.k.wages>0?(m.k.contrib/m.k.wages):null;
+    var ratioOk=ratio!=null&&ratio>=0.15&&ratio<=0.45;
+    Q.push('<tr><td>'+esc(m.label)+'</td>'+[e1,e2,e3,e4,e5,gi].map(function(e){return '<td class="'+(Math.abs(e)>1?'neg':'pos')+'">'+(Math.abs(e)>1?fmt(e):'ок')+'</td>'}).join('')+
+      '<td class="'+(pe!=null&&Math.abs(pe)>1?'neg':'pos')+'">'+(pe==null?'—':(Math.abs(pe)>1?fmt(pe):'ок'))+'</td>'+
+      '<td class="'+(miss>0?'neg':'pos')+'">'+(miss>0?'нет '+miss+' дн.':'ок')+'</td>'+
+      '<td class="'+(ratio==null?'':(ratioOk?'pos':'neg'))+'">'+(ratio==null?'—':(ratioOk?'ок':pc(ratio*100)))+'</td></tr>');
   });
-  h+='<div class="panel"><h3>Контроль данных</h3><div class="n">Все месяцы. «ок» — арифметика сходится, число — размер расхождения, ₽</div><div class="ts"><table><thead><tr><th>Месяц</th><th>Выручка − себест. = валовая</th><th>Валовая − расходы = опер.</th><th>Опер. ± прочее = чистая</th><th>Начало + ДДС = конец</th><th>Выручка ОПиУ = чеки</th><th>Группы = итого расходов</th><th>Конец пред. = начало</th></tr></thead><tbody>'+Q.join('')+'</tbody></table></div></div>';
+  h+='<div class="panel"><h3>Контроль данных</h3><div class="n">Все месяцы. «ок» — проверка пройдена, число — что не сошлось. Взносы/зарплата вне нормы 15–45% — следствие учёта по факту оплаты: месяц без оплаты взносов завышен, месяц оплаты занижен.</div><div class="ts"><table><thead><tr><th>Месяц</th><th>Выручка − себест. = валовая</th><th>Валовая − расходы = опер.</th><th>Опер. ± прочее = чистая</th><th>Начало + ДДС = конец</th><th>Выручка ОПиУ = чеки</th><th>Группы = итого расходов</th><th>Конец пред. = начало</th><th>Все дни в чеках</th><th>Взносы/зарплата 15–45%</th></tr></thead><tbody>'+Q.join('')+'</tbody></table></div></div>';
   $('#main').innerHTML=h;
 }
 })();
